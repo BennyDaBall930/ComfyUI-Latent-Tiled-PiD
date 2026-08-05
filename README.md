@@ -20,14 +20,19 @@ Single-shot PiD decoding is only trained for the 1024→4096 envelope. Push a 2M
 and midtone color collapses — whites turn pink, chroma noise everywhere. The model isn't broken;
 you're just asking it to perform outside its contract, and it answers in magenta:
 
-![single-shot collapse vs tiled](images/ab_junction_512crop.jpg)
+![single-shot collapse vs tiled — this 100% crop sits directly on a tile seam](images/ab_collapse_roses.jpg)
+
+That crop sits **directly on the vertical tile seam** — find it. And the same decode that fixes the
+color is a genuine detail upgrade over the plain VAE decode:
+
+![real synthesized detail vs the VAE decode](images/ab_detail_dahlia.jpg)
 
 Existing tiled-PiD flows tile the **decoded image** and VAE-encode each tile back to latent space
 before running PiD — a lossy round-trip through tiles that were never real latents. Tiling the
 generation latent itself skips all of that: every tile conditions on a bit-exact crop of the latent
 the sampler actually produced, PiD's sigma-gated LQ injection keeps tiles globally coherent, and the
-complementary raised-cosine feather (weights sum to exactly 1) leaves no seams — measured worst seam
-gradient ratio 1.04 at 33MP, with the 4-tile junction landing on the subject.
+complementary raised-cosine feather (weights sum to exactly 1) leaves no seams (worst measured seam
+gradient ratio across all test runs: 0.77–1.04, where 1.0 is statistically invisible).
 
 The idea came from a simple observation while measuring the collapse: PiD's RoPE is relative, so a
 cropped latent decoded as its own image is indistinguishable from a native render of that size. I
