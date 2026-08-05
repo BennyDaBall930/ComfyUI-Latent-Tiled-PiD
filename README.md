@@ -55,6 +55,24 @@ Runs the checkpoint's distilled 4-step schedule (`0.999, 0.866, 0.634, 0.342, 0`
 cfg 1.0 internally — the reference PiD configuration; do not expect other schedules to work on a
 DMD2-distilled student. Per-tile progress bar, interruptible, no temp files.
 
+### There is no "tile mode" switch — the latent size is the mode
+
+Tile count is derived, not selected: output is always **4x the latent**, and the planner grows the
+grid to cover whatever you feed it while keeping every tile inside the envelope. At the default
+`max_tile 1024`:
+
+| latent (stage-1) | grid | tiles | output |
+|---|---|---|---|
+| up to 1024x1024 | 1x1 | 1 | up to 4096x4096 |
+| 1920x1088 | 2x2 | 4 | 7680x4352 — 33 MP |
+| 2560x1440 | 3x2 | 6 | 10240x5760 — 59 MP |
+| 3456x1944 | 4x2 | 8 | 13824x7776 — 107 MP |
+
+Want more resolution? Render a bigger latent. Lowering `max_tile` makes tiles smaller and more
+numerous **without changing output size** (useful only for VRAM headroom); there is deliberately no
+way to force *fewer* tiles than planned, because that would push tiles past the trained envelope —
+the exact failure this node exists to prevent. The node prints its plan to the console on every run.
+
 ### Latent-Tiled PiD QA (vs VAE twin)
 
 `IMAGE + IMAGE -> STRING`. Wire in the decode and the normal `VAEDecode` of the same latent.

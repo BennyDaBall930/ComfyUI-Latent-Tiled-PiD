@@ -117,6 +117,10 @@ class LatentTiledPiDDecode:
         samples = latent["samples"]
         stage1_w, stage1_h = samples.shape[-1] * 8, samples.shape[-2] * 8
         plan = make_plan(stage1_w, stage1_h, max_tile, overlap, seed)
+        print(f"[Latent-Tiled PiD] {stage1_w}x{stage1_h} latent -> "
+              f"{plan.cols}x{plan.rows} tiles ({len(plan.tiles)}) of "
+              f"{plan.xs[0][1] * PID_SCALE}x{plan.ys[0][1] * PID_SCALE} out-px -> "
+              f"{stage1_w * PID_SCALE}x{stage1_h * PID_SCALE} output")
 
         fmt = _latent_format(latent_format, samples.shape[1])
         negative = _zero_out(positive)
