@@ -70,7 +70,9 @@ git clone https://github.com/BennyDaBall930/ComfyUI-Latent-Tiled-PiD
 ```
 
 Restart ComfyUI. Nodes are under `latent/pid`. Requires ComfyUI ≥ 0.28 (PiD in core) and the PiD
-checkpoints (NVIDIA, NSCLv1 non-commercial). No python dependencies beyond ComfyUI itself.
+checkpoints (NVIDIA weights under the
+[NVIDIA License](https://huggingface.co/nvidia/PixelDiT-1300M-1024px/blob/main/LICENSE) —
+non-commercial research/evaluation use). No python dependencies beyond ComfyUI itself.
 
 ## Example workflow
 
@@ -119,6 +121,12 @@ Also documented there: core ComfyUI `LatentCrop` silently corrupts 5-dim qwen/Wa
   design point, credited as prior art.
 - Concept, direction and testing: **BennyDaBall930**.
 
-MIT license. Model weights remain under NVIDIA's NSCLv1.
+## License & compliance
+
+This repo's code and images (our own generations) are **MIT**. It ships **no NVIDIA model weights
+and no NVIDIA code** — the PiD checkpoints come from NVIDIA under the
+[NVIDIA License](https://huggingface.co/nvidia/PixelDiT-1300M-1024px/blob/main/LICENSE)
+(non-commercial: research and evaluation use); read it before pointing this at anything commercial.
+Independent project — not affiliated with, sponsored by, or endorsed by NVIDIA or Comfy Org.
 
 Built & tested locally with care by BennyDaBall930.
