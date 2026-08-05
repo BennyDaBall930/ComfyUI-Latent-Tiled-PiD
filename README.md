@@ -62,20 +62,30 @@ DMD2-distilled student. Per-tile progress bar, interruptible, no temp files.
 ### There is no "tile mode" switch — the latent size is the mode
 
 Tile count is derived, not selected: output is always **4x the latent**, and the planner grows the
-grid to cover whatever you feed it while keeping every tile inside the envelope. At the default
-`max_tile 1024`:
+grid to cover whatever you feed it while keeping every tile inside the envelope. Set your empty
+latent to one of these (all render-proven on Krea 2 Turbo) and you get the tile count in the left
+column — that's the whole setup:
 
-| latent (stage-1) | grid | tiles | output |
-|---|---|---|---|
-| up to 1024x1024 | 1x1 | 1 | up to 4096x4096 |
-| 1920x1088 | 2x2 | 4 | 7680x4352 — 33 MP |
-| 2560x1440 | 3x2 | 6 | 10240x5760 — 59 MP |
-| 3456x1944 | 4x2 | 8 | 13824x7776 — 107 MP |
+| tiles | landscape latent | portrait latent | output (landscape) | megapixels |
+|---|---|---|---|---|
+| 1 | up to 1024x1024 | up to 1024x1024 | up to 4096x4096 | ≤ 16.8 |
+| 4 (2x2) | **1920x1088** | 1088x1920 | 7680x4352 | 33.4 |
+| 6 (3x2) | **2560x1440** | 1440x2560 | 10240x5760 | 59.0 |
+| 8 (4x2) | **3456x1944** | 1944x3456 | 13824x7776 | 107.5 |
 
-Want more resolution? Render a bigger latent. Lowering `max_tile` makes tiles smaller and more
-numerous **without changing output size** (useful only for VRAM headroom); there is deliberately no
-way to force *fewer* tiles than planned, because that would push tiles past the trained envelope —
-the exact failure this node exists to prevent. The node prints its plan to the console on every run.
+Every other knob has exactly one correct value — copy the sizes above and leave these alone:
+
+| setting | value | why |
+|---|---|---|
+| `max_tile` | 1024 | the trained envelope; lowering it shrinks tiles for VRAM headroom **without changing output size**, raising it re-invites the color collapse |
+| `overlap` | 64 | the validated feather band (x4 in output px) |
+| `degrade_sigma` | 0.0 | only raise it when decoding deliberately half-denoised latents |
+| `latent_format` | `qwenimage` | for Qwen-family models (Krea 2, Qwen-Image); `flux`/`sd3`/`sdxl` for those families |
+| `seed` | anything | tile i noises with `seed + 101*(i+1)` |
+
+Want more resolution? Render a bigger latent. There is deliberately no way to force *fewer* tiles
+than planned — that would push tiles past the trained envelope, the exact failure this node exists
+to prevent. The node prints its plan to the console on every run so you can see what it decided.
 
 ### Latent-Tiled PiD QA (vs VAE twin)
 
