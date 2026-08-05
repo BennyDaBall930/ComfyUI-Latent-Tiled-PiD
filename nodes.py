@@ -1,0 +1,208 @@
+"""Latent-Tiled PiD — ComfyUI nodes.
+
+Tile the latent, not the pixels: decodes a generation latent through NVIDIA's
+PiD (Pixel Diffusion Decoder) as overlapping latent tiles, each a normal-sized
+PiD job inside the model's trained 1024->4096 envelope, then feather-blends the
+pixel tiles. Single-shot PiD past ~4K output suffers midtone color collapse;
+tiling the latent avoids it with no VAE re-encode round-trip.
+
+Companion headless driver + measurements:
+https://github.com/BennyDaBall930/pid-tiled-decode
+"""
+from __future__ import annotations
+
+import numpy as np
+import torch
+
+import comfy.latent_formats
+import comfy.model_management
+import comfy.sample
+import comfy.samplers
+import comfy.sd
+import comfy.utils
+import node_helpers
+
+from .tiling import (
+    PID_SCALE,
+    blend_tiles,
+    crop_latent_tensor,
+    make_plan,
+    midtone_chroma_delta,
+    shadow_green_bias,
+)
+
+# The 4-step DMD2-distilled schedule the released PiD checkpoints were trained
+# for (do not respace) + the lcm sampler, matching the reference workflow.
+PID_SIGMAS = [0.999, 0.866, 0.634, 0.342, 0.0]
+
+
+def _zero_out(conditioning):
+    """Core ConditioningZeroOut, inlined (avoids importing the server's nodes
+    module): zero the cond tensor and pooled_output."""
+    out = []
+    for t in conditioning:
+        d = t[1].copy()
+        pooled = d.get("pooled_output", None)
+        if pooled is not None:
+            d["pooled_output"] = torch.zeros_like(pooled)
+        out.append([torch.zeros_like(t[0]), d])
+    return out
+
+
+def _latent_format(name: str, channels: int):
+    if name == "flux":
+        flux2 = getattr(comfy.latent_formats, "Flux2", None)
+        if channels == 128 and flux2 is not None:
+            return flux2()
+        return comfy.latent_formats.Flux()
+    if name == "sd3":
+        return comfy.latent_formats.SD3()
+    if name == "sdxl":
+        return comfy.latent_formats.SDXL()
+    if name == "qwenimage":
+        return comfy.latent_formats.Wan21()
+    raise ValueError(f"Unknown latent_format: {name}")
+
+
+def _pixel_space_vae():
+    try:
+        vae = comfy.sd.VAE(sd={"pixel_space_vae": torch.tensor(1.0)})
+        if hasattr(vae, "throw_exception_if_invalid"):
+            vae.throw_exception_if_invalid()
+        return vae
+    except Exception as exc:
+        raise RuntimeError(
+            "Could not construct the pixel-space VAE — Latent-Tiled PiD needs a ComfyUI "
+            "version with PiD support (>= 0.28). Update ComfyUI and retry."
+        ) from exc
+
+
+def _fix_channels(model, empty):
+    try:
+        return comfy.sample.fix_empty_latent_channels(model, empty)
+    except Exception:
+        return empty  # pixel-space latents are already 3ch; safe to proceed
+
+
+class LatentTiledPiDDecode:
+    """LATENT in -> high-res IMAGE out, via latent-native tiled PiD decoding."""
+
+    SEARCH_ALIASES = ["pid tiled", "tiled pid", "latent tiled upscale"]
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "model": ("MODEL", {"tooltip": "The PiD checkpoint (UNETLoader)."}),
+            "positive": ("CONDITIONING", {"tooltip": "PiD text conditioning (Gemma CLIPTextEncode; empty prompt is fine)."}),
+            "latent": ("LATENT", {"tooltip": "The generation latent straight from your KSampler (flux/sd3/sdxl/qwen-family)."}),
+            "latent_format": (["flux", "sd3", "sdxl", "qwenimage"], {"default": "qwenimage"}),
+            "max_tile": ("INT", {"default": 1024, "min": 256, "max": 4096, "step": 8,
+                                 "tooltip": "Max tile size per axis in stage-1 px. 1024 = PiD's trained envelope."}),
+            "overlap": ("INT", {"default": 64, "min": 16, "max": 512, "step": 8,
+                                "tooltip": "Tile overlap in stage-1 px (x4 in output; feather band)."}),
+            "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff,
+                             "control_after_generate": True}),
+            "degrade_sigma": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01,
+                                        "tooltip": "PiD noisy-latent conditioning: raise for partially-denoised latents."}),
+        }}
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "decode"
+    CATEGORY = "latent/pid"
+    DESCRIPTION = ("Decodes the latent as overlapping tiles through PiD — every tile stays inside "
+                   "the trained 1024->4096 envelope, avoiding the color collapse of single-shot "
+                   "decoding at large sizes — then feather-blends (seam-free, weights sum to 1).")
+
+    def decode(self, model, positive, latent, latent_format, max_tile, overlap, seed, degrade_sigma):
+        samples = latent["samples"]
+        stage1_w, stage1_h = samples.shape[-1] * 8, samples.shape[-2] * 8
+        plan = make_plan(stage1_w, stage1_h, max_tile, overlap, seed)
+
+        fmt = _latent_format(latent_format, samples.shape[1])
+        negative = _zero_out(positive)
+        sampler = comfy.samplers.sampler_object("lcm")
+        sigmas = torch.FloatTensor(PID_SIGMAS)
+        vae = _pixel_space_vae()
+        sigma_t = torch.tensor([float(degrade_sigma)], dtype=torch.float32)
+
+        pbar = comfy.utils.ProgressBar(len(plan.tiles))
+        tile_images: dict[str, np.ndarray] = {}
+        batch = samples.shape[0]
+        for tile in plan.tiles:
+            comfy.model_management.throw_exception_if_processing_interrupted()
+            crop = crop_latent_tensor(samples, tile.x, tile.y, tile.w, tile.h)
+            lq = fmt.process_in(crop)
+            if lq.ndim == 5:
+                lq = lq[:, :, 0]
+            cond = node_helpers.conditioning_set_values(
+                positive, {"lq_latent": lq, "degrade_sigma": sigma_t})
+
+            empty = torch.zeros((batch, 3, tile.h * PID_SCALE, tile.w * PID_SCALE),
+                                device=comfy.model_management.intermediate_device())
+            empty = _fix_channels(model, empty)
+            noise = comfy.sample.prepare_noise(empty, tile.seed, None)
+            out = comfy.sample.sample_custom(
+                model, noise, 1.0, sampler, sigmas, cond, negative, empty,
+                noise_mask=None, callback=None, disable_pbar=True, seed=tile.seed)
+
+            img = vae.decode(out)  # [B, H, W, 3] in [0, 1]
+            tile_images[tile.name] = img[0].to(torch.float32).cpu().numpy() if batch == 1 else \
+                img.to(torch.float32).cpu().numpy()
+            pbar.update(1)
+
+        if batch == 1:
+            blended = blend_tiles(plan, tile_images)
+            image = torch.from_numpy(blended)[None, ...]
+        else:
+            per_b = []
+            for b in range(batch):
+                blended = blend_tiles(plan, {k: v[b] for k, v in tile_images.items()})
+                per_b.append(torch.from_numpy(blended))
+            image = torch.stack(per_b, dim=0)
+        return (image,)
+
+
+class LatentTiledPiDQA:
+    """Compare a PiD decode against its VAE-decode twin: midtone chroma delta
+    (catches the past-envelope color collapse; healthy 10-15, broken ~30,
+    flag > 20) and shadow green-bias delta (flag +/-3)."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "image": ("IMAGE", {"tooltip": "The PiD decode (any resolution)."}),
+            "reference": ("IMAGE", {"tooltip": "The stage-1 VAE decode of the same latent."}),
+        }}
+
+    RETURN_TYPES = ("STRING",)
+    FUNCTION = "measure"
+    CATEGORY = "latent/pid"
+    OUTPUT_NODE = True
+
+    def measure(self, image, reference):
+        img = image[0].to(torch.float32).cpu().numpy()
+        ref = reference[0].to(torch.float32).cpu().numpy()
+        if img.shape[:2] != ref.shape[:2]:
+            t = torch.from_numpy(img).permute(2, 0, 1)[None]
+            t = torch.nn.functional.interpolate(t, size=ref.shape[:2], mode="area")
+            img = t[0].permute(1, 2, 0).numpy()
+        chroma = midtone_chroma_delta(img, ref)
+        green = shadow_green_bias(img) - shadow_green_bias(ref)
+        chroma_ok = chroma <= 20.0
+        green_ok = abs(green) <= 3.0
+        text = (f"midtone chroma delta: {chroma:.2f} pts "
+                f"({'PASS' if chroma_ok else 'CHECK — color collapse territory'}; flag > 20)\n"
+                f"shadow green-bias delta: {green:+.2f} pts "
+                f"({'PASS' if green_ok else 'CHECK'}; flag +/-3)")
+        return {"ui": {"text": [text]}, "result": (text,)}
+
+
+NODE_CLASS_MAPPINGS = {
+    "LatentTiledPiDDecode": LatentTiledPiDDecode,
+    "LatentTiledPiDQA": LatentTiledPiDQA,
+}
+
+NODE_DISPLAY_NAME_MAPPINGS = {
+    "LatentTiledPiDDecode": "Latent-Tiled PiD Decode",
+    "LatentTiledPiDQA": "Latent-Tiled PiD QA (vs VAE twin)",
+}
