@@ -9,6 +9,6 @@ dependencies = []
 Repository = "https://github.com/BennyDaBall930/ComfyUI-Latent-Tiled-PiD"
 
 [tool.comfy]
-PublisherId = "bennydaball930"
+PublisherId = "bennydaball"
 DisplayName = "Latent-Tiled PiD"
 Icon = ""
