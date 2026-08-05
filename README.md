@@ -36,6 +36,10 @@ shot can't reach. This pack is that, as two nodes.
 
 ## Nodes
 
+**The one rule to internalize: output resolution = 4x your latent, always.** Feed a bigger latent
+and the node adds tiles automatically — there is nothing to configure. 1MP latent → 1 tile → 16MP.
+2MP → 4 tiles → 33MP. 6.7MP → 8 tiles → 107MP. Same node, same settings.
+
 ### Latent-Tiled PiD Decode
 
 `MODEL + CONDITIONING + LATENT -> IMAGE`
@@ -97,7 +101,9 @@ non-commercial research/evaluation use). No python dependencies beyond ComfyUI i
 [`example_workflows/krea2_turbo_2mp_to_33mp.json`](example_workflows/krea2_turbo_2mp_to_33mp.json) —
 complete Krea 2 Turbo pipeline: 1920x1088 stage-1 → Latent-Tiled PiD → 7680x4352 master, with the
 VAE baseline and the QA node wired in. Swap the two stage-1 loaders for your own qwen-family stack
-and it still runs.
+and it still runs. Loaded in ComfyUI it looks like this:
+
+![the example workflow loaded in ComfyUI](images/workflow_in_comfyui.jpg)
 
 ## Tested on
 
