@@ -96,6 +96,98 @@ def make_plan(width: int, height: int, max_tile: int, overlap: int, base_seed: i
     return plan
 
 
+def solve_size(tiles: int, aspect_w: int, aspect_h: int,
+               max_tile: int = 1024, overlap: int = 64, align: int = ALIGN):
+    """Largest stage-1 (width, height, cols, rows) whose plan yields exactly
+    `tiles` tiles at the given aspect, every tile inside the envelope.
+    Returns None when the combo is impossible (e.g. 6 tiles at 1:1)."""
+    def axis_max(n: int) -> int:
+        return n * max_tile - (n - 1) * overlap
+
+    best = None
+    for cols in range(1, tiles + 1):
+        if tiles % cols:
+            continue
+        rows = tiles // cols
+        w = min(axis_max(cols), axis_max(rows) * aspect_w / aspect_h)
+        w = (int(w) // align) * align
+        h = (int(w * aspect_h / aspect_w) // align) * align
+        if w <= 0 or h <= 0 or h > axis_max(rows):
+            continue
+        if cols > 1 and w <= axis_max(cols - 1):
+            continue
+        if rows > 1 and h <= axis_max(rows - 1):
+            continue
+        if best is None or w * h > best[0] * best[1]:
+            best = (w, h, cols, rows)
+    return best
+
+
+# Render-proven ladder sizes (16:9 family, validated 2026-08-04/06 incl. the
+# 137MP and 213MP rungs) take precedence over solver maximums so the dropdown
+# matches the tested sizes exactly. Sub-1024 single-tile rungs were tested and
+# REJECTED: stage-1 models go mushy below their trained res and PiD reinterprets
+# instead of decoding (chroma gate flags it) — the 1-tile ~1024-class entry is
+# the deliberate floor.
+_PROVEN = {
+    (16, 9): {2: (1344, 768), 4: (1920, 1088), 6: (2560, 1440), 8: (3456, 1944),
+              12: (3904, 2192), 15: (4864, 2736)},
+    (9, 16): {2: (768, 1344), 4: (1088, 1920), 6: (1440, 2560), 8: (1944, 3456),
+              12: (2192, 3904), 15: (2736, 4864)},
+}
+
+_ASPECT_ORDER = [("16:9", 16, 9), ("9:16", 9, 16), ("4:3", 4, 3), ("3:4", 3, 4),
+                 ("3:2", 3, 2), ("2:3", 2, 3), ("4:5", 4, 5), ("5:4", 5, 4),
+                 ("1:1", 1, 1)]
+
+_TILE_TIERS = (2, 4, 6, 8, 9, 12, 15, 16)
+
+
+def _single_tile_size(aw: int, ah: int, max_tile: int = 1024, align: int = ALIGN):
+    if aw >= ah:
+        w = max_tile
+        h = (int(w * ah / aw) // align) * align
+    else:
+        h = max_tile
+        w = (int(h * aw / ah) // align) * align
+    return w, h
+
+
+def build_presets():
+    """[(label, w, h, tiles)] — every entry planner-validated by the self-test.
+    Labels show aspect, render size, output size, megapixels and tile count so
+    the dropdown itself is the whole setup guide."""
+    presets = []
+
+    def label(name, w, h, tiles):
+        ow, oh = w * PID_SCALE, h * PID_SCALE
+        mp = ow * oh / 1e6
+        t = "1 tile" if tiles == 1 else f"{tiles} tiles"
+        return f"{name} | render {w}x{h} -> output {ow}x{oh} | {mp:.0f} MP | {t}"
+
+    for name, aw, ah in _ASPECT_ORDER:
+        w, h = _single_tile_size(aw, ah)
+        presets.append((label(name, w, h, 1), w, h, 1))
+        prev_area = w * h
+        for tiles in _TILE_TIERS:
+            proven = _PROVEN.get((aw, ah), {}).get(tiles)
+            if proven is not None:
+                w, h = proven
+            else:
+                solved = solve_size(tiles, aw, ah)
+                if solved is None:
+                    continue  # impossible combos never reach the dropdown
+                w, h, _c, _r = solved
+            if w * h < prev_area * 1.05:
+                continue  # skip rungs that add tiles without adding real size
+            prev_area = w * h
+            presets.append((label(name, w, h, tiles), w, h, tiles))
+    return presets
+
+
+PRESETS = build_presets()
+
+
 def crop_latent_tensor(t, x: int, y: int, w: int, h: int):
     """Crop the SPATIAL dims of a latent tensor, layout-agnostic (works on
     numpy arrays and torch tensors, 4-dim [B,C,H,W] or 5-dim [B,C,T,H,W]).
@@ -213,7 +305,23 @@ def self_test() -> int:
     assert shadow_green_bias(tinted) > 3.0
     assert midtone_chroma_delta(np.full((64, 64, 3), 0.5, np.float32),
                                 np.full((64, 64, 3), 0.5, np.float32)) < 1e-6
-    print("SELF-TEST PASS")
+    # presets: every dropdown entry must round-trip through the planner to
+    # EXACTLY its stated tile count, all tiles in-envelope, dims aligned
+    seen_labels = set()
+    for lbl, w, h, tiles in PRESETS:
+        assert lbl not in seen_labels, f"duplicate preset label: {lbl}"
+        seen_labels.add(lbl)
+        assert w % ALIGN == 0 and h % ALIGN == 0, lbl
+        if tiles == 1:
+            assert w <= 1024 and h <= 1024, lbl
+        else:
+            plan = make_plan(w, h, 1024, 64, 1)
+            assert len(plan.tiles) == tiles, \
+                f"{lbl}: promised {tiles} tiles, planner gives {len(plan.tiles)}"
+            assert plan.xs[0][1] <= 1024 and plan.ys[0][1] <= 1024, lbl
+        print(f"[preset] {lbl}")
+    assert solve_size(6, 1, 1) is None and solve_size(8, 1, 1) is None
+    print(f"SELF-TEST PASS ({len(PRESETS)} presets)")
     return 0
 
 

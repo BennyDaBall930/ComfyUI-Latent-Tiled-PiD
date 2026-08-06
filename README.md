@@ -45,6 +45,27 @@ shot can't reach. This pack is that, as two nodes.
 and the node adds tiles automatically — there is nothing to configure. 1MP latent → 1 tile → 16MP.
 2MP → 4 tiles → 33MP. 6.7MP → 8 tiles → 107MP. Same node, same settings.
 
+### Latent-Tiled PiD Size Picker
+
+`(nothing) -> LATENT` — **start here.** One dropdown, zero math. Wire it where
+`EmptySD3LatentImage` would go and pick a line:
+
+```
+16:9 | render 1920x1088 -> output 7680x4352 | 33 MP | 4 tiles
+```
+
+Every entry is a complete, planner-validated configuration: aspect, the stage-1 render size this
+latent will have, the exact output resolution the tiled decode will produce, and how many tiles it
+takes. 56 presets across 9 aspect ratios, from single-tile 4K-class up to **244 MP** (1:1,
+15616x15616). The 16:9 / 9:16 families carry the render-proven ladder sizes; other aspects and the
+largest rungs are planner-validated. There is deliberately no sub-1024 single-tile entry: below
+their trained res, stage-1 models go mushy and PiD reinterprets instead of decoding — the ~1024
+single-tile entry is the floor on purpose.
+
+> **Model support:** the whole pipeline is tested with **Krea 2 Turbo only** (qwen-family). Other
+> qwen-family stage-1 models should behave the same; flux/sd3/sdxl paths exist in the Decode node
+> but are untested. If you run something else, run the QA node and trust its verdicts over hope.
+
 ### Latent-Tiled PiD Decode
 
 `MODEL + CONDITIONING + LATENT -> IMAGE`
@@ -67,9 +88,10 @@ DMD2-distilled student. Per-tile progress bar, interruptible, no temp files.
 ### There is no "tile mode" switch — the latent size is the mode
 
 Tile count is derived, not selected: output is always **4x the latent**, and the planner grows the
-grid to cover whatever you feed it while keeping every tile inside the envelope. Set your empty
-latent to one of these (all render-proven on Krea 2 Turbo) and you get the tile count in the left
-column — that's the whole setup:
+grid to cover whatever you feed it while keeping every tile inside the envelope. **The Size Picker
+node's dropdown IS this table** — use it and skip the math. If you'd rather use a stock
+`EmptySD3LatentImage`, set it to one of these (all render-proven on Krea 2 Turbo) and you get the
+tile count in the left column:
 
 | tiles | landscape latent | portrait latent | output (landscape) | megapixels |
 |---|---|---|---|---|
@@ -111,14 +133,17 @@ checkpoints (NVIDIA weights under the
 [NVIDIA License](https://huggingface.co/nvidia/PixelDiT-1300M-1024px/blob/main/LICENSE) —
 non-commercial research/evaluation use). No python dependencies beyond ComfyUI itself.
 
-## Example workflow
+## Example workflows
+
+[`example_workflows/krea2_turbo_sizepicker.json`](example_workflows/krea2_turbo_sizepicker.json) —
+**the recommended one**: full Krea 2 Turbo pipeline with the Size Picker in front (one dropdown →
+KSampler → tiled decode → master), VAE baseline and QA node wired in.
 
 [`example_workflows/krea2_turbo_2mp_to_33mp.json`](example_workflows/krea2_turbo_2mp_to_33mp.json) —
-complete Krea 2 Turbo pipeline: 1920x1088 stage-1 → Latent-Tiled PiD → 7680x4352 master, with the
-VAE baseline and the QA node wired in. Swap the two stage-1 loaders for your own qwen-family stack
-and it still runs. Loaded in ComfyUI it looks like this:
+the same pipeline with a stock `EmptySD3LatentImage` at fixed 1920x1088, for people who prefer
+typing numbers. Loaded in ComfyUI:
 
-![the example workflow loaded in ComfyUI](images/workflow_in_comfyui.jpg)
+![the size-picker example loaded in ComfyUI — one dropdown replaces all resolution math](images/workflow_in_comfyui.jpg)
 
 ## Tested on
 
@@ -130,7 +155,7 @@ breaks, this table is the first thing to check, not the issue tracker:
 | ComfyUI | **0.30.1** (built against `comfy.sample.sample_custom`, the pixel-space VAE, and core PiD support as of this version) |
 | Python | 3.13.12 |
 | PyTorch | 2.13.0+cu130 |
-| stage-1 model | **Krea 2 Turbo** — `krea2_turbo_fp8_scaled.safetensors` + `qwen3vl_4b_fp8_scaled` text encoder (CLIPLoader type `krea2`), 8 steps euler/simple cfg 1.0 |
+| stage-1 model | **Krea 2 Turbo — the ONLY stage-1 model tested** — `krea2_turbo_fp8_scaled.safetensors` + `qwen3vl_4b_fp8_scaled` text encoder (CLIPLoader type `krea2`), 8 steps euler/simple cfg 1.0 |
 | PiD checkpoint | `pid_qwenimage_1024_to_4096_4step_bf16.safetensors` (**v1**; the v1.5 checkpoints exist and are so far untested here) |
 | GPU | RTX 5090 32 GB, `--use-sage-attention`, cudaMallocAsync |
 | verified outputs | 5376x3072 (16.5MP), 7680x4352 (33.4MP), 10240x5760 (59MP), 13824x7776 (107.5MP) |

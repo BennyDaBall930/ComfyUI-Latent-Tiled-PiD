@@ -1,7 +1,7 @@
 [project]
 name = "comfyui-latent-tiled-pid"
 description = "Tile the latent, not the pixels: latent-native tiled decoding for NVIDIA PiD. Seam-free 33MP+ masters from 2MP latents; avoids the past-envelope color collapse of single-shot decoding. No VAE re-encode round-trip."
-version = "1.0.0"
+version = "1.1.0"
 license = { file = "LICENSE" }
 dependencies = []
 

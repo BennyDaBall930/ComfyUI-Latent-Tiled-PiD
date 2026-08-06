@@ -24,6 +24,7 @@ import node_helpers
 
 from .tiling import (
     PID_SCALE,
+    PRESETS,
     blend_tiles,
     crop_latent_tensor,
     make_plan,
@@ -166,6 +167,50 @@ class LatentTiledPiDDecode:
         return (image,)
 
 
+class LatentTiledPiDSize:
+    """One dropdown, zero math: every entry shows aspect, render size, output
+    size, megapixels and tile count. Emits the empty latent at that size —
+    wire it where EmptySD3LatentImage would go."""
+
+    SEARCH_ALIASES = ["pid size", "poster size", "tile size picker"]
+
+    _MAP = {label: (w, h, tiles) for label, w, h, tiles in PRESETS}
+    _DEFAULT = next(label for label, w, h, tiles in PRESETS if (w, h) == (1920, 1088))
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "size": ([label for label, _w, _h, _t in PRESETS],
+                     {"default": cls._DEFAULT,
+                      "tooltip": "aspect | stage-1 render size -> final output size | megapixels | "
+                                 "tile count. Pick a line; there is nothing else to configure."}),
+            "batch_size": ("INT", {"default": 1, "min": 1, "max": 64}),
+        }}
+
+    RETURN_TYPES = ("LATENT",)
+    FUNCTION = "generate"
+    CATEGORY = "latent/pid"
+    DESCRIPTION = ("Every dropdown entry is a complete, planner-validated configuration: the "
+                   "aspect ratio, the stage-1 render size this latent will have, the output "
+                   "resolution the tiled decode will produce, and how many tiles it takes. "
+                   "All entries keep every tile inside PiD's trained envelope.")
+
+    def generate(self, size, batch_size):
+        if size not in self._MAP:
+            raise ValueError(f"Unknown size preset: {size!r} — re-select from the dropdown "
+                             "(the preset list may have changed between versions).")
+        w, h, tiles = self._MAP[size]
+        print(f"[Latent-Tiled PiD Size] {size}")
+        # Mirrors core EmptySD3LatentImage.execute (comfy_extras/nodes_sd3.py) —
+        # it is a v3 io.ComfyNode, not callable classic-style from here.
+        dtype_fn = getattr(comfy.model_management, "intermediate_dtype", None)
+        latent = torch.zeros(
+            [batch_size, 16, h // 8, w // 8],
+            device=comfy.model_management.intermediate_device(),
+            dtype=dtype_fn() if dtype_fn is not None else torch.float32)
+        return ({"samples": latent, "downscale_ratio_spacial": 8},)
+
+
 class LatentTiledPiDQA:
     """Compare a PiD decode against its VAE-decode twin: midtone chroma delta
     (catches the past-envelope color collapse; healthy 10-15, broken ~30,
@@ -203,10 +248,12 @@ class LatentTiledPiDQA:
 
 NODE_CLASS_MAPPINGS = {
     "LatentTiledPiDDecode": LatentTiledPiDDecode,
+    "LatentTiledPiDSize": LatentTiledPiDSize,
     "LatentTiledPiDQA": LatentTiledPiDQA,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "LatentTiledPiDDecode": "Latent-Tiled PiD Decode",
+    "LatentTiledPiDSize": "Latent-Tiled PiD Size Picker",
     "LatentTiledPiDQA": "Latent-Tiled PiD QA (vs VAE twin)",
 }
