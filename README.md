@@ -54,13 +54,15 @@ and the node adds tiles automatically — there is nothing to configure. 1MP lat
 16:9 | render 1920x1088 -> output 7680x4352 | 33 MP | 4 tiles
 ```
 
-Every entry is a complete, planner-validated configuration: aspect, the stage-1 render size this
-latent will have, the exact output resolution the tiled decode will produce, and how many tiles it
-takes. 56 presets across 9 aspect ratios, from single-tile 4K-class up to **244 MP** (1:1,
-15616x15616). The 16:9 / 9:16 families carry the render-proven ladder sizes; other aspects and the
-largest rungs are planner-validated. There is deliberately no sub-1024 single-tile entry: below
-their trained res, stage-1 models go mushy and PiD reinterprets instead of decoding — the ~1024
-single-tile entry is the floor on purpose.
+Every entry is a complete configuration: aspect, the stage-1 render size this latent will have, the
+exact output resolution the tiled decode will produce, and how many tiles it takes. **53 presets
+across 9 aspect ratios, every single one render-tested end-to-end** — full QA sweep on Krea 2 Turbo,
+per-preset verdicts in [docs/preset_sweep_report.md](docs/preset_sweep_report.md). Range: single-tile
+4K-class up to **244 MP** (1:1, 15616x15616). Three ~210MP 15-tile variants tested just past the
+chroma gate and were culled rather than shipped. There is deliberately no sub-1024 single-tile
+entry either: below their trained res, stage-1 models go mushy and PiD reinterprets instead of
+decoding — the ~1024 single-tile entry is the floor on purpose. Nothing in this dropdown is
+theoretical.
 
 > **Model support:** the whole pipeline is tested with **Krea 2 Turbo only** (qwen-family). Other
 > qwen-family stage-1 models should behave the same; flux/sd3/sdxl paths exist in the Decode node

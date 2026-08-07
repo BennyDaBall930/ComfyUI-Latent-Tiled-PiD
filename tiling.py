@@ -142,6 +142,10 @@ _ASPECT_ORDER = [("16:9", 16, 9), ("9:16", 9, 16), ("4:3", 4, 3), ("3:4", 3, 4),
 
 _TILE_TIERS = (2, 4, 6, 8, 9, 12, 15, 16)
 
+# Render-tested over the chroma gate in the 2026-08-06 full sweep (all three are
+# ~210MP 15-tile rungs whose chroma flickers just past the flag) — culled.
+_CULLED = {(9, 16): {15}, (3, 2): {15}, (2, 3): {15}}
+
 
 def _single_tile_size(aw: int, ah: int, max_tile: int = 1024, align: int = ALIGN):
     if aw >= ah:
@@ -170,6 +174,8 @@ def build_presets():
         presets.append((label(name, w, h, 1), w, h, 1))
         prev_area = w * h
         for tiles in _TILE_TIERS:
+            if tiles in _CULLED.get((aw, ah), set()):
+                continue
             proven = _PROVEN.get((aw, ah), {}).get(tiles)
             if proven is not None:
                 w, h = proven
