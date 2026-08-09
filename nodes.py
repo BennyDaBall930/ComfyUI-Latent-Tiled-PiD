@@ -213,8 +213,8 @@ class LatentTiledPiDSize:
 
 class LatentTiledPiDQA:
     """Compare a PiD decode against its VAE-decode twin: midtone chroma delta
-    (catches the past-envelope color collapse; healthy 10-15, broken ~30,
-    flag > 20) and shadow green-bias delta (flag +/-3)."""
+    (catches the past-envelope color collapse; healthy ~8-12 on PiD v1.5,
+    10-15 on v1, broken ~30, flag > 20) and shadow green-bias delta (flag +/-3)."""
 
     @classmethod
     def INPUT_TYPES(cls):

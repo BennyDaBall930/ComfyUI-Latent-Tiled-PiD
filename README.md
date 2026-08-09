@@ -9,8 +9,9 @@ Latent-native tiled decoding for NVIDIA [PiD](https://research.nvidia.com/labs/s
 (Pixel Diffusion Decoder, [arXiv:2605.23902](https://arxiv.org/abs/2605.23902)) as native ComfyUI
 nodes. One node between KSampler and SaveImage: slices the **generation latent** into overlapping
 tiles, decodes every tile as a normal-sized in-envelope PiD job, feather-blends the pixels. Seam-free
-33MP from a 2MP latent in about a minute — verified up to **107MP** (13824x7776), with cost scaling
-~linearly at roughly **1MP of finished output per second on a single RTX 5090**.
+33MP from a 2MP latent in about a minute — verified up to **244MP** (15616x15616), with **56
+render-tested sizes across 9 aspect ratios** and cost scaling ~linearly at roughly **1MP of
+finished output per second on a single RTX 5090**.
 
 ![33MP tiled decode](images/hero_tiled_33mp.jpg)
 
@@ -43,7 +44,7 @@ shot can't reach. This pack is that, as two nodes.
 
 **The one rule to internalize: output resolution = 4x your latent, always.** Feed a bigger latent
 and the node adds tiles automatically — there is nothing to configure. 1MP latent → 1 tile → 16MP.
-2MP → 4 tiles → 33MP. 6.7MP → 8 tiles → 107MP. Same node, same settings.
+2MP → 4 tiles → 33MP. 6.7MP → 8 tiles → 107MP. 15.2MP → 16 tiles → 244MP. Same node, same settings.
 
 ### Latent-Tiled PiD Size Picker
 
@@ -102,6 +103,12 @@ tile count in the left column:
 | 4 (2x2) | **1920x1088** | 1088x1920 | 7680x4352 | 33.4 |
 | 6 (3x2) | **2560x1440** | 1440x2560 | 10240x5760 | 59.0 |
 | 8 (4x2) | **3456x1944** | 1944x3456 | 13824x7776 | 107.5 |
+| 12 (4x3) | **3904x2192** | 2192x3904 | 15616x8768 | 136.9 |
+| 15 (5x3) | **4864x2736** | 2736x4864 | 19456x10944 | 212.9 |
+| 16 (4x4, 1:1 only) | **3904x3904** | — | 15616x15616 | 243.9 |
+
+(That's the 16:9/9:16/1:1 spine — the Size Picker dropdown carries all 56 tested sizes across nine
+aspects, with per-size verdicts in [docs/preset_sweep_report.md](docs/preset_sweep_report.md).)
 
 Every other knob has exactly one correct value — copy the sizes above and leave these alone:
 
