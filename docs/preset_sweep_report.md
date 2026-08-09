@@ -57,3 +57,15 @@ total 47 | PASS 41 | MARGINAL 3 | FAIL 3 | RUN-FAILED 0
 | 1:1 | render 1984x1984 -> output 7936x7936 | 63 MP | 4 tiles | PASS | 2.67 | 14.71 | 1.093 | 67.0 |
 | 1:1 | render 2944x2944 -> output 11776x11776 | 139 MP | 9 tiles | PASS | 1.92 | 17.55 | 0.944 | 143.2 |
 
+
+## v1.5 retest addendum (2026-08-06)
+
+PiD v1.5 (color-fidelity fix, v1 deprecated upstream) retested on the three FAIL rows and the
+reference latent — all redeemed; presets restored in v1.2.0:
+
+| preset | v1 chroma | v1.5 chroma | v1.5 green | verdict |
+|---|---|---|---|---|
+| 9:16 15-tile 213MP | 21.11 FAIL | 11.82 | -0.49 | PASS |
+| 3:2 15-tile 208MP | 20.12 FAIL | 10.50 | -0.34 | PASS |
+| 2:3 15-tile 208MP | 20.91 FAIL | 9.80 | -0.18 | PASS |
+| (reference) 16:9 33MP flower latent | 15.72 | 8.01 | +0.02 | PASS |

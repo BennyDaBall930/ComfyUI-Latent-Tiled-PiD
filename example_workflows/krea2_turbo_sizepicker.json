@@ -583,7 +583,7 @@
         }
       },
       "widgets_values": [
-        "pid_qwenimage_1024_to_4096_4step_bf16.safetensors",
+        "pid_1.5_qwenimage_1024_to_4096_4step_bf16.safetensors",
         "default"
       ]
     },

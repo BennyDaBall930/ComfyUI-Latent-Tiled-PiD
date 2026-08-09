@@ -142,9 +142,11 @@ _ASPECT_ORDER = [("16:9", 16, 9), ("9:16", 9, 16), ("4:3", 4, 3), ("3:4", 3, 4),
 
 _TILE_TIERS = (2, 4, 6, 8, 9, 12, 15, 16)
 
-# Render-tested over the chroma gate in the 2026-08-06 full sweep (all three are
-# ~210MP 15-tile rungs whose chroma flickers just past the flag) — culled.
-_CULLED = {(9, 16): {15}, (3, 2): {15}, (2, 3): {15}}
+# v1.1.1 culled the three ~210MP 15-tile rungs (chroma just past the gate on
+# the v1 checkpoint). PiD v1.5's color-fidelity fix redeemed all three on
+# retest (chroma 9.8-11.8 vs 20.1-21.1) — restored in v1.2.0 with the v1.5
+# checkpoint as the shipped default. Empty dict kept as the cull mechanism.
+_CULLED: dict = {}
 
 
 def _single_tile_size(aw: int, ah: int, max_tile: int = 1024, align: int = ALIGN):

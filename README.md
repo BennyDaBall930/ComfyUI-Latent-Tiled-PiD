@@ -55,14 +55,15 @@ and the node adds tiles automatically — there is nothing to configure. 1MP lat
 ```
 
 Every entry is a complete configuration: aspect, the stage-1 render size this latent will have, the
-exact output resolution the tiled decode will produce, and how many tiles it takes. **53 presets
+exact output resolution the tiled decode will produce, and how many tiles it takes. **56 presets
 across 9 aspect ratios, every single one render-tested end-to-end** — full QA sweep on Krea 2 Turbo,
 per-preset verdicts in [docs/preset_sweep_report.md](docs/preset_sweep_report.md). Range: single-tile
-4K-class up to **244 MP** (1:1, 15616x15616). Three ~210MP 15-tile variants tested just past the
-chroma gate and were culled rather than shipped. There is deliberately no sub-1024 single-tile
-entry either: below their trained res, stage-1 models go mushy and PiD reinterprets instead of
-decoding — the ~1024 single-tile entry is the floor on purpose. Nothing in this dropdown is
-theoretical.
+4K-class up to **244 MP** (1:1, 15616x15616). Three ~210MP 15-tile rungs briefly shipped culled
+(their chroma tested just past the gate on the v1 checkpoint) and were restored in v1.2.0 when
+**PiD v1.5's color-fidelity fix cut their chroma roughly in half on retest** (9.8–11.8 vs
+20.1–21.1). There is deliberately no sub-1024 single-tile entry: below their trained res, stage-1
+models go mushy and PiD reinterprets instead of decoding — the ~1024 single-tile entry is the floor
+on purpose. Nothing in this dropdown is theoretical.
 
 > **Model support:** the whole pipeline is tested with **Krea 2 Turbo only** (qwen-family). Other
 > qwen-family stage-1 models should behave the same; flux/sd3/sdxl paths exist in the Decode node
@@ -74,7 +75,7 @@ theoretical.
 
 | input | notes |
 |---|---|
-| `model` | PiD checkpoint via `UNETLoader` (e.g. `pid_qwenimage_1024_to_4096_4step_bf16.safetensors`) |
+| `model` | PiD checkpoint via `UNETLoader` — use **v1.5** (`pid_1.5_qwenimage_1024_to_4096_4step_bf16.safetensors`); v1 works but is deprecated upstream and measurably worse on color |
 | `positive` | Gemma-2 `CLIPTextEncode` (CLIPLoader type `pixeldit`); empty prompt works |
 | `latent` | generation latent straight off the KSampler — flux / sd3 / sdxl / qwen-family |
 | `latent_format` | `qwenimage` default; Flux2 auto-detected from channel count under `flux` |
@@ -119,9 +120,9 @@ to prevent. The node prints its plan to the console on every run so you can see 
 ### Latent-Tiled PiD QA (vs VAE twin)
 
 `IMAGE + IMAGE -> STRING`. Wire in the decode and the normal `VAEDecode` of the same latent.
-Reports **midtone chroma delta** (the collapse detector — healthy decodes calibrate 10–15, collapsed
-~30, flag > 20) and **shadow green-bias delta** (flag ±3). Run it whenever you push a new resolution
-or model combo.
+Reports **midtone chroma delta** (the collapse detector — healthy decodes calibrate ~8–12 on PiD
+v1.5 (10–15 on v1), collapsed ~30, flag > 20) and **shadow green-bias delta** (flag ±3). Run it
+whenever you push a new resolution or model combo.
 
 ## Install
 
@@ -154,19 +155,19 @@ breaks, this table is the first thing to check, not the issue tracker:
 
 | component | exact version |
 |---|---|
-| ComfyUI | **0.30.1** (built against `comfy.sample.sample_custom`, the pixel-space VAE, and core PiD support as of this version) |
+| ComfyUI | **0.31.1** (also validated on 0.30.1; built against `comfy.sample.sample_custom`, the pixel-space VAE, and core PiD support) |
 | Python | 3.13.12 |
 | PyTorch | 2.13.0+cu130 |
 | stage-1 model | **Krea 2 Turbo — the ONLY stage-1 model tested** — `krea2_turbo_fp8_scaled.safetensors` + `qwen3vl_4b_fp8_scaled` text encoder (CLIPLoader type `krea2`), 8 steps euler/simple cfg 1.0 |
-| PiD checkpoint | `pid_qwenimage_1024_to_4096_4step_bf16.safetensors` (**v1**; the v1.5 checkpoints exist and are so far untested here) |
+| PiD checkpoint | **v1.5** — `pid_1.5_qwenimage_1024_to_4096_4step_bf16.safetensors` (v1 is deprecated upstream; on identical latents v1.5 roughly halved our midtone chroma delta and zeroed shadow green-bias) |
 | GPU | RTX 5090 32 GB, `--use-sage-attention`, cudaMallocAsync |
-| verified outputs | 5376x3072 (16.5MP), 7680x4352 (33.4MP), 10240x5760 (59MP), 13824x7776 (107.5MP) |
-| test date | 2026-08-04 |
+| verified outputs | full preset ladder 2304x4096 up to 15616x15616 (244MP) — every dropdown entry, see [docs/preset_sweep_report.md](docs/preset_sweep_report.md) |
+| test dates | 2026-08-04 → 2026-08-06 |
 
-Everything through 59MP passes every QA gate clean. At 107MP the shadow green-bias delta reads +3.9
-(a hair past the ±3 flag) — the first sign of tone stretch, disclosed here so nobody has to discover
-it for me. If ComfyUI moves its sampling internals in some future version, that is when this pack
-needs a patch, not an argument — open an issue **with your versions** and it gets fixed.
+On the v1 checkpoint the biggest rungs (107MP+) showed a +3.5–3.9 shadow green-bias tone stretch,
+disclosed in earlier releases; **on v1.5 those same rungs measure near zero** (−0.5 to +0.02). If
+ComfyUI moves its sampling internals in some future version, that is when this pack needs a patch,
+not an argument — open an issue **with your versions** and it gets fixed.
 
 ## Measurements, methodology, headless version
 
