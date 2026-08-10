@@ -23,8 +23,11 @@ import comfy.utils
 import node_helpers
 
 from .tiling import (
+    ALIGN,
+    ALIGN_FLUX2,
     PID_SCALE,
     PRESETS,
+    PRESETS_FLUX2,
     blend_tiles,
     crop_latent_tensor,
     make_plan,
@@ -51,9 +54,13 @@ def _zero_out(conditioning):
 
 
 def _latent_format(name: str, channels: int):
-    if name == "flux":
+    if name in ("flux", "flux2"):
         flux2 = getattr(comfy.latent_formats, "Flux2", None)
-        if channels == 128 and flux2 is not None:
+        if name == "flux2" or (channels == 128 and flux2 is not None):
+            if flux2 is None:
+                raise RuntimeError(
+                    "latent_format 'flux2' needs a ComfyUI version with FLUX.2 "
+                    "support — update ComfyUI and retry.")
             return flux2()
         return comfy.latent_formats.Flux()
     if name == "sd3":
@@ -95,8 +102,12 @@ class LatentTiledPiDDecode:
         return {"required": {
             "model": ("MODEL", {"tooltip": "The PiD checkpoint (UNETLoader)."}),
             "positive": ("CONDITIONING", {"tooltip": "PiD text conditioning (Gemma CLIPTextEncode; empty prompt is fine)."}),
-            "latent": ("LATENT", {"tooltip": "The generation latent straight from your KSampler (flux/sd3/sdxl/qwen-family)."}),
-            "latent_format": (["flux", "sd3", "sdxl", "qwenimage"], {"default": "qwenimage"}),
+            "latent": ("LATENT", {"tooltip": "The generation latent straight from your KSampler (flux/flux2-klein/sd3/sdxl/qwen-family)."}),
+            "latent_format": (["flux", "flux2", "sd3", "sdxl", "qwenimage"],
+                              {"default": "qwenimage",
+                               "tooltip": "Family of the STAGE-1 latent. 'flux2' = FLUX.2 dev + Klein 4B/9B "
+                                          "(128-ch, 16x); Flux2 is also auto-detected under 'flux' from the "
+                                          "channel count, matching core PiDConditioning."}),
             "max_tile": ("INT", {"default": 1024, "min": 256, "max": 4096, "step": 8,
                                  "tooltip": "Max tile size per axis in stage-1 px. 1024 = PiD's trained envelope."}),
             "overlap": ("INT", {"default": 64, "min": 16, "max": 512, "step": 8,
@@ -116,14 +127,24 @@ class LatentTiledPiDDecode:
 
     def decode(self, model, positive, latent, latent_format, max_tile, overlap, seed, degrade_sigma):
         samples = latent["samples"]
-        stage1_w, stage1_h = samples.shape[-1] * 8, samples.shape[-2] * 8
-        plan = make_plan(stage1_w, stage1_h, max_tile, overlap, seed)
+        fmt = _latent_format(latent_format, samples.shape[1])
+        # Family geometry: one latent cell = `down` stage-1 px (8 for the 8x
+        # families, 16 for FLUX.2/Klein). Tile positions/sizes must land on
+        # whole latent cells, so the plan aligns to `down`.
+        down = int(getattr(fmt, "spacial_downscale_ratio", 8) or 8)
+        align = max(ALIGN, down)
+        mt = max(align * 2, max_tile - max_tile % align)
+        ov = max(align, overlap - overlap % align)
+        if (mt, ov) != (max_tile, overlap):
+            print(f"[Latent-Tiled PiD] snapped max_tile/overlap {max_tile}/{overlap} "
+                  f"-> {mt}/{ov} (multiples of {align} for this latent family)")
+        stage1_w, stage1_h = samples.shape[-1] * down, samples.shape[-2] * down
+        plan = make_plan(stage1_w, stage1_h, mt, ov, seed, align=align)
         print(f"[Latent-Tiled PiD] {stage1_w}x{stage1_h} latent -> "
               f"{plan.cols}x{plan.rows} tiles ({len(plan.tiles)}) of "
               f"{plan.xs[0][1] * PID_SCALE}x{plan.ys[0][1] * PID_SCALE} out-px -> "
               f"{stage1_w * PID_SCALE}x{stage1_h * PID_SCALE} output")
 
-        fmt = _latent_format(latent_format, samples.shape[1])
         negative = _zero_out(positive)
         sampler = comfy.samplers.sampler_object("lcm")
         sigmas = torch.FloatTensor(PID_SIGMAS)
@@ -135,7 +156,7 @@ class LatentTiledPiDDecode:
         batch = samples.shape[0]
         for tile in plan.tiles:
             comfy.model_management.throw_exception_if_processing_interrupted()
-            crop = crop_latent_tensor(samples, tile.x, tile.y, tile.w, tile.h)
+            crop = crop_latent_tensor(samples, tile.x, tile.y, tile.w, tile.h, down=down)
             lq = fmt.process_in(crop)
             if lq.ndim == 5:
                 lq = lq[:, :, 0]
@@ -211,6 +232,51 @@ class LatentTiledPiDSize:
         return ({"samples": latent, "downscale_ratio_spacial": 8},)
 
 
+class LatentTiledPiDSizeFlux2:
+    """Size picker for the FLUX.2 family (dev + Klein 4B/9B): every entry is
+    16-grid-aligned for the 128-ch, 16x-downscale flux2 latent space. Emits the
+    empty flux2 latent plus width/height INTs to wire into Flux2Scheduler."""
+
+    SEARCH_ALIASES = ["pid size flux2", "klein size", "flux2 tile size picker"]
+
+    _MAP = {label: (w, h, tiles) for label, w, h, tiles in PRESETS_FLUX2}
+    _DEFAULT = next(label for label, w, h, tiles in PRESETS_FLUX2 if (w, h) == (1920, 1088))
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "size": ([label for label, _w, _h, _t in PRESETS_FLUX2],
+                     {"default": cls._DEFAULT,
+                      "tooltip": "aspect | stage-1 render size -> final output size | megapixels | "
+                                 "tile count. Pick a line; there is nothing else to configure."}),
+            "batch_size": ("INT", {"default": 1, "min": 1, "max": 64}),
+        }}
+
+    RETURN_TYPES = ("LATENT", "INT", "INT")
+    RETURN_NAMES = ("latent", "width", "height")
+    FUNCTION = "generate"
+    CATEGORY = "latent/pid"
+    DESCRIPTION = ("FLUX.2 / Klein flavor of the Size Picker: emits the native 128-channel "
+                   "16x-downscale empty latent at a planner-validated size, plus the matching "
+                   "width/height (wire those into Flux2Scheduler so its resolution-dependent "
+                   "shift tracks the preset). All entries keep every tile inside PiD's "
+                   "trained envelope.")
+
+    def generate(self, size, batch_size):
+        if size not in self._MAP:
+            raise ValueError(f"Unknown size preset: {size!r} — re-select from the dropdown "
+                             "(the preset list may have changed between versions).")
+        w, h, tiles = self._MAP[size]
+        print(f"[Latent-Tiled PiD Size Flux2] {size}")
+        # Mirrors core EmptyFlux2LatentImage (comfy_extras/nodes_flux.py).
+        dtype_fn = getattr(comfy.model_management, "intermediate_dtype", None)
+        latent = torch.zeros(
+            [batch_size, 128, h // ALIGN_FLUX2, w // ALIGN_FLUX2],
+            device=comfy.model_management.intermediate_device(),
+            dtype=dtype_fn() if dtype_fn is not None else torch.float32)
+        return ({"samples": latent, "downscale_ratio_spacial": ALIGN_FLUX2}, w, h)
+
+
 class LatentTiledPiDQA:
     """Compare a PiD decode against its VAE-decode twin: midtone chroma delta
     (catches the past-envelope color collapse; healthy ~8-12 on PiD v1.5,
@@ -249,11 +315,13 @@ class LatentTiledPiDQA:
 NODE_CLASS_MAPPINGS = {
     "LatentTiledPiDDecode": LatentTiledPiDDecode,
     "LatentTiledPiDSize": LatentTiledPiDSize,
+    "LatentTiledPiDSizeFlux2": LatentTiledPiDSizeFlux2,
     "LatentTiledPiDQA": LatentTiledPiDQA,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "LatentTiledPiDDecode": "Latent-Tiled PiD Decode",
     "LatentTiledPiDSize": "Latent-Tiled PiD Size Picker",
+    "LatentTiledPiDSizeFlux2": "Latent-Tiled PiD Size Picker (FLUX.2 / Klein)",
     "LatentTiledPiDQA": "Latent-Tiled PiD QA (vs VAE twin)",
 }

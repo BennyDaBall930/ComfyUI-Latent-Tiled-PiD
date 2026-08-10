@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 
 PID_SCALE = 4  # stage-1 px -> output px
 ALIGN = 8      # tile positions/sizes stay multiples of 8 (latent + patch alignment)
+ALIGN_FLUX2 = 16  # FLUX.2 / Klein latents are 16x-downscaled: one latent cell = 16 stage-1 px
 
 GREEN_BIAS_GATE_PTS = 3.0
 CHROMA_GATE_PTS = 20.0
@@ -84,10 +85,11 @@ def plan_axis(size: int, max_tile: int, overlap: int, align: int = ALIGN) -> lis
     return positions
 
 
-def make_plan(width: int, height: int, max_tile: int, overlap: int, base_seed: int) -> TilePlan:
+def make_plan(width: int, height: int, max_tile: int, overlap: int, base_seed: int,
+              align: int = ALIGN) -> TilePlan:
     plan = TilePlan(width, height, overlap)
-    plan.xs = plan_axis(width, max_tile, overlap)
-    plan.ys = plan_axis(height, max_tile, overlap)
+    plan.xs = plan_axis(width, max_tile, overlap, align=align)
+    plan.ys = plan_axis(height, max_tile, overlap, align=align)
     idx = 0
     for r, (y, h) in enumerate(plan.ys):
         for c, (x, w) in enumerate(plan.xs):
@@ -148,6 +150,13 @@ _TILE_TIERS = (2, 4, 6, 8, 9, 12, 15, 16)
 # checkpoint as the shipped default. Empty dict kept as the cull mechanism.
 _CULLED: dict = {}
 
+# flux2-family culls (2026-08-10 Klein 4B sweep): the 4:3 6-tile rung failed
+# the shadow green-bias gate twice (-3.66, then -5.15 on a seed-shift retest) —
+# systematic, so it doesn't ship. Chroma was healthy both times; candidate for
+# restoration if a future PiD flux2 checkpoint fixes the shadow drift. The 4:5
+# 9-tile rung flagged once (-4.03) but passed its retest (-0.66) — kept.
+_CULLED_FLUX2: dict = {(4, 3): {6}}
+
 
 def _single_tile_size(aw: int, ah: int, max_tile: int = 1024, align: int = ALIGN):
     if aw >= ah:
@@ -159,10 +168,17 @@ def _single_tile_size(aw: int, ah: int, max_tile: int = 1024, align: int = ALIGN
     return w, h
 
 
-def build_presets():
+def build_presets(align: int = ALIGN, culled: dict | None = None):
     """[(label, w, h, tiles)] — every entry planner-validated by the self-test.
     Labels show aspect, render size, output size, megapixels and tile count so
-    the dropdown itself is the whole setup guide."""
+    the dropdown itself is the whole setup guide. `align` is the family's
+    latent-cell size in stage-1 px (8 for the 8x families, 16 for FLUX.2);
+    proven ladder sizes are reused only when they land on the family's grid,
+    otherwise the solver supplies the nearest in-envelope size. `culled` maps
+    (aspect_w, aspect_h) -> set of tile tiers that failed that family's QA
+    gates and must not ship."""
+    if culled is None:
+        culled = _CULLED
     presets = []
 
     def label(name, w, h, tiles):
@@ -172,17 +188,17 @@ def build_presets():
         return f"{name} | render {w}x{h} -> output {ow}x{oh} | {mp:.0f} MP | {t}"
 
     for name, aw, ah in _ASPECT_ORDER:
-        w, h = _single_tile_size(aw, ah)
+        w, h = _single_tile_size(aw, ah, align=align)
         presets.append((label(name, w, h, 1), w, h, 1))
         prev_area = w * h
         for tiles in _TILE_TIERS:
-            if tiles in _CULLED.get((aw, ah), set()):
+            if tiles in culled.get((aw, ah), set()):
                 continue
             proven = _PROVEN.get((aw, ah), {}).get(tiles)
-            if proven is not None:
+            if proven is not None and proven[0] % align == 0 and proven[1] % align == 0:
                 w, h = proven
             else:
-                solved = solve_size(tiles, aw, ah)
+                solved = solve_size(tiles, aw, ah, align=align)
                 if solved is None:
                     continue  # impossible combos never reach the dropdown
                 w, h, _c, _r = solved
@@ -194,15 +210,18 @@ def build_presets():
 
 
 PRESETS = build_presets()
+PRESETS_FLUX2 = build_presets(align=ALIGN_FLUX2, culled=_CULLED_FLUX2)
 
 
-def crop_latent_tensor(t, x: int, y: int, w: int, h: int):
+def crop_latent_tensor(t, x: int, y: int, w: int, h: int, down: int = 8):
     """Crop the SPATIAL dims of a latent tensor, layout-agnostic (works on
     numpy arrays and torch tensors, 4-dim [B,C,H,W] or 5-dim [B,C,T,H,W]).
+    Coordinates are stage-1 px; `down` is the family's spatial downscale
+    (8 for flux1/sd3/sdxl/qwen, 16 for FLUX.2/Klein).
 
     Core ComfyUI LatentCrop indexes dims 2/3 and silently mangles the 5-dim
     qwen/Wan-family case — always slice the LAST two dims instead."""
-    return t[..., y // 8:(y + h) // 8, x // 8:(x + w) // 8]
+    return t[..., y // down:(y + h) // down, x // down:(x + w) // down]
 
 
 def axis_weights(pos_sizes: list[tuple[int, int]], scale: int):
@@ -315,21 +334,38 @@ def self_test() -> int:
                                 np.full((64, 64, 3), 0.5, np.float32)) < 1e-6
     # presets: every dropdown entry must round-trip through the planner to
     # EXACTLY its stated tile count, all tiles in-envelope, dims aligned
-    seen_labels = set()
-    for lbl, w, h, tiles in PRESETS:
-        assert lbl not in seen_labels, f"duplicate preset label: {lbl}"
-        seen_labels.add(lbl)
-        assert w % ALIGN == 0 and h % ALIGN == 0, lbl
-        if tiles == 1:
-            assert w <= 1024 and h <= 1024, lbl
-        else:
-            plan = make_plan(w, h, 1024, 64, 1)
-            assert len(plan.tiles) == tiles, \
-                f"{lbl}: promised {tiles} tiles, planner gives {len(plan.tiles)}"
-            assert plan.xs[0][1] <= 1024 and plan.ys[0][1] <= 1024, lbl
-        print(f"[preset] {lbl}")
+    for family, plist, align in (("8x", PRESETS, ALIGN),
+                                 ("flux2", PRESETS_FLUX2, ALIGN_FLUX2)):
+        seen_labels = set()
+        for lbl, w, h, tiles in plist:
+            assert lbl not in seen_labels, f"duplicate preset label: {lbl}"
+            seen_labels.add(lbl)
+            assert w % align == 0 and h % align == 0, f"{family}: {lbl}"
+            if tiles == 1:
+                assert w <= 1024 and h <= 1024, lbl
+            else:
+                plan = make_plan(w, h, 1024, 64, 1, align=align)
+                assert len(plan.tiles) == tiles, \
+                    f"{family} {lbl}: promised {tiles} tiles, planner gives {len(plan.tiles)}"
+                assert plan.xs[0][1] <= 1024 and plan.ys[0][1] <= 1024, lbl
+                for (pos, size) in plan.xs + plan.ys:
+                    assert pos % align == 0 and size % align == 0, f"{family}: {lbl}"
+            print(f"[preset {family}] {lbl}")
     assert solve_size(6, 1, 1) is None and solve_size(8, 1, 1) is None
-    print(f"SELF-TEST PASS ({len(PRESETS)} presets)")
+    # flux2 alignment: 16x plans land every boundary on a latent cell
+    plan16 = make_plan(1920, 1088, 1024, 64, 1, align=ALIGN_FLUX2)
+    for (pos, size) in plan16.xs + plan16.ys:
+        assert pos % 16 == 0 and size % 16 == 0
+    # flux2 crop: px coords -> 16x latent cells, exact slices
+    lat2 = np.arange(1 * 128 * 68 * 120).reshape(1, 128, 68, 120)
+    c16 = crop_latent_tensor(lat2, x=448, y=352, w=512, h=416, down=16)
+    assert c16.shape == (1, 128, 26, 32), c16.shape
+    assert (c16 == lat2[:, :, 22:48, 28:60]).all()
+    # the flagship proven rungs survive on the 16-grid with identical sizes
+    flux2_sizes = {(w, h) for _l, w, h, _t in PRESETS_FLUX2}
+    for wh in ((1344, 768), (1920, 1088), (2560, 1440), (3904, 2192), (4864, 2736)):
+        assert wh in flux2_sizes, f"flux2 presets lost proven rung {wh}"
+    print(f"SELF-TEST PASS ({len(PRESETS)} presets 8x, {len(PRESETS_FLUX2)} presets flux2)")
     return 0
 
 
