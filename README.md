@@ -80,7 +80,8 @@ on purpose. Nothing in this dropdown is theoretical.
 > ~111MP up — shadow drift first, then chroma past the gate at 137MP+
 > ([docs/preset_sweep_report_flux2_9b.md](docs/preset_sweep_report_flux2_9b.md)); **use 4B for the
 > monster rungs**, which sweeps clean to 244MP. Other qwen-family stage-1 models should behave
-> like Krea 2; flux1/sd3/sdxl paths exist in the Decode node but are untested. If you run
+> like Krea 2; the **flux1 path is validated** (Z-Image-Turbo stage-1, 2026-08-28 — see the
+> FLUX.1 section below); sd3/sdxl paths exist in the Decode node but are untested. If you run
 > something else, run the QA node and trust its verdicts over hope.
 
 ### Latent-Tiled PiD Size Picker (FLUX.2 / Klein) — v1.3.0
@@ -103,7 +104,7 @@ example workflows.
 | `model` | PiD checkpoint via `UNETLoader` — use **v1.5** for your family: `pid_1.5_qwenimage_…` (qwen), `pid_1.5_flux2_1024_to_4096_4step_bf16.safetensors` (FLUX.2 dev + Klein 4B/9B), `pid_1.5_flux1_…` (flux1); v1 works but is deprecated upstream and measurably worse on color |
 | `positive` | Gemma-2 `CLIPTextEncode` (CLIPLoader type `pixeldit`); empty prompt works — same encoder for every family |
 | `latent` | generation latent straight off the sampler — flux / **flux2 (Klein)** / sd3 / sdxl / qwen-family |
-| `latent_format` | `qwenimage` default; **`flux2` for FLUX.2 dev / Klein** (also auto-detected from the 128-channel count under `flux`, matching core `PiDConditioning`) |
+| `latent_format` | `qwenimage` default; **`flux2` for FLUX.2 dev / Klein** (also auto-detected from the 128-channel count under `flux`, matching core `PiDConditioning`); **`flux` for FLUX.1 / Z-Image-Turbo** |
 | `max_tile` | max tile edge in stage-1 px; **1024 = the trained envelope, leave it there** |
 | `overlap` | feather band in stage-1 px (x4 in output); 64 default |
 | `seed` | tile i noises with `seed + 101*(i+1)` |
@@ -141,7 +142,7 @@ Every other knob has exactly one correct value — copy the sizes above and leav
 | `max_tile` | 1024 | the trained envelope; lowering it shrinks tiles for VRAM headroom **without changing output size**, raising it re-invites the color collapse |
 | `overlap` | 64 | the validated feather band (x4 in output px) |
 | `degrade_sigma` | 0.0 | only raise it when decoding deliberately half-denoised latents |
-| `latent_format` | `qwenimage` | for Qwen-family models (Krea 2, Qwen-Image); **`flux2` for FLUX.2 dev / Klein 4B / 9B**; `flux`/`sd3`/`sdxl` for those families |
+| `latent_format` | `qwenimage` | for Qwen-family models (Krea 2, Qwen-Image); **`flux2` for FLUX.2 dev / Klein 4B / 9B**; **`flux` for FLUX.1 / Z-Image-Turbo**; `sd3`/`sdxl` for those families |
 | `seed` | anything | tile i noises with `seed + 101*(i+1)` |
 
 Want more resolution? Render a bigger latent. There is deliberately no way to force *fewer* tiles
@@ -165,6 +166,23 @@ Stage-1 content reality check (same doctrine as the qwen ladder): Klein's native
 is ~1–4MP. The decode stays faithful at any ladder size — what changes at monster rungs is the
 stage-1 model's compositional coherence, so scenery holds up best up there; keep faces and hero
 subjects at the ~2MP rungs.
+
+### FLUX.1 / Z-Image-Turbo calibration (measured 2026-08-28)
+
+The **flux1 lane is validated**: Z-Image-Turbo stage-1 at 1920×1088 → `pid_1.5_flux1` tiled
+decode → 7680×4352, QA'd against the flux `ae.safetensors` twin across three test articles —
+chroma deltas 3.4–8.1, all gates green, decode character indistinguishable from bf16 at 100%.
+Stage-1 recipe (as in the shipped example workflows): `z_image_turbo_bf16.safetensors` +
+`qwen_3_4b.safetensors` on **CLIPLoader type `lumina2`** (auto-detects as the Z-Image text
+encoder) + `ModelSamplingAuraFlow` shift 3.0 → KSampler 8 steps, cfg 1.0, `res_multistep` /
+`simple`. Set the Decode node's `latent_format` to `flux`.
+
+⚠ One family quirk that makes this node MORE necessary here, not less: **flux1's single-shot
+envelope is tighter than qwen/flux2**. Past-envelope single-shot decodes (e.g. 1344×768 → 5376
+wide) break down visibly where the other families still hold; at 4096 output the stage-1 is
+pinned to ~1MP, which starves detail. The tiled path dodges the whole trade — 2MP stage-1
+composition quality with every tile inside the trained envelope. For flux1, tiled isn't the
+big-print option, it's the default.
 
 Licensing: Klein 4B is Apache-2.0; **Klein 9B and FLUX.2-dev are non-commercial licenses**, and
 the PiD weights are NVIDIA non-commercial regardless — the strictest license in your chain wins.
@@ -212,6 +230,19 @@ master, VAE baseline + QA included. Models: `flux-2-klein-4b.safetensors`, `qwen
 `qwen_3_8b_fp8mixed.safetensors`). Non-commercial license on the 9B weights. Validated clean
 through the 59MP rungs — pick the 1/2/4/6-tile dropdown lines; for anything bigger use the 4B
 workflow, which sweeps clean to 244MP.
+
+[`example_workflows/zimage_turbo_sizepicker_pid.json`](example_workflows/zimage_turbo_sizepicker_pid.json)
+— **Z-Image-Turbo / FLUX.1** end-to-end: Size Picker → Z-Image stage-1 (`qwen_3_4b.safetensors`
+on CLIPLoader type `lumina2`, `ModelSamplingAuraFlow` shift 3.0, 8 steps res_multistep) → tiled
+PiD decode with `pid_1.5_flux1_1024_to_4096_4step_bf16.safetensors` (`latent_format: flux`) →
+33MP master, `ae.safetensors` VAE baseline + QA included.
+
+[`example_workflows/zimage_turbo_simple_pid.json`](example_workflows/zimage_turbo_simple_pid.json)
+— core-nodes-only single-shot companion for flux1, pinned at its envelope: Z-Image at 1024×1024
+→ `PiDConditioning` → 4-step decode → **4096×4096**. Needs
+[`example_workflows/pixel_space_vae.safetensors`](example_workflows/pixel_space_vae.safetensors)
+(84-byte marker file, included) copied into `ComfyUI/models/vae/`. flux1's single-shot ceiling
+is real — square-at-4096 is the one good rung; for 16:9 or bigger use the tiled workflow above.
 
 Loaded in ComfyUI:
 
